@@ -78,7 +78,7 @@ const monthKeyLabel = (key) => { const [y, m] = key.split("-").map(Number); retu
 const addMonths = (key, delta) => { const [y, m] = key.split("-").map(Number); const d = new Date(y, m - 1 + delta, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
 const emptyMonth = () => ({ income: { husband: 0, wife: 0 }, allowance: { husband: 400000, wife: 400000 }, fixed: [], variable: [] });
 const cloneMonthForward = (src) => ({ income: { ...src.income }, allowance: { ...src.allowance }, fixed: src.fixed.map((f) => ({ ...f })), variable: [] });
-const DEFAULT_DATA = { currentMonth: START_MONTH, months: { [START_MONTH]: emptyMonth() }, savings: [], debts: [] };
+const DEFAULT_DATA = { currentMonth: START_MONTH, months: { [START_MONTH]: emptyMonth() }, savings: [], debts: [], deposits: [], stocks: [], pensions: [] };
 const CATEGORIES = ["식비", "생활용품", "문화/여가", "경조사", "의료", "교통", "기타"];
 
 const c = {
@@ -86,15 +86,19 @@ const c = {
   hairline: "#dddddd", hairlineSoft: "#ebebeb", borderStrong: "#c1c1c1",
   ink: "#222222", body: "#3f3f3f", muted: "#6a6a6a", mutedSoft: "#929292",
   primary: "#ff385c", primaryActive: "#e00b41", primaryDisabled: "#ffd1da", onPrimary: "#ffffff", error: "#c13515",
+  chartBlue: "#2f6fed", chartGreen: "#1fae6d",
 };
 const shadow1 = "rgba(0,0,0,0.02) 0 0 0 1px, rgba(0,0,0,0.04) 0 2px 6px 0, rgba(0,0,0,0.1) 0 4px 8px 0";
 
 function migrate(raw) {
-  if (raw && raw.months) return raw;
-  if (raw && raw.income) {
-    return { currentMonth: START_MONTH, months: { [START_MONTH]: { income: raw.income, allowance: raw.allowance, fixed: raw.fixed || [], variable: raw.variable || [] } }, savings: raw.savings || [], debts: raw.debts || [] };
+  let base;
+  if (raw && raw.months) base = raw;
+  else if (raw && raw.income) {
+    base = { currentMonth: START_MONTH, months: { [START_MONTH]: { income: raw.income, allowance: raw.allowance, fixed: raw.fixed || [], variable: raw.variable || [] } }, savings: raw.savings || [], debts: raw.debts || [] };
+  } else {
+    base = DEFAULT_DATA;
   }
-  return DEFAULT_DATA;
+  return { ...base, deposits: base.deposits || [], stocks: base.stocks || [], pensions: base.pensions || [] };
 }
 
 /* ---------------- Cloudflare API helpers ---------------- */
@@ -251,6 +255,13 @@ function HouseholdLedger({ pin }) {
     return { principal, remaining, pct: principal > 0 ? Math.min(100, Math.round(((principal - remaining) / principal) * 100)) : 0 };
   }, [data.debts]);
 
+  const assetTotals = useMemo(() => {
+    const deposits = data.deposits.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const stocks = data.stocks.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const pensions = data.pensions.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    return { deposits, stocks, pensions, total: deposits + stocks + pensions };
+  }, [data.deposits, data.stocks, data.pensions]);
+
   const categoryBreakdown = useMemo(() => {
     const map = {};
     month.variable.forEach((v) => (map[v.category] = (map[v.category] || 0) + (Number(v.amount) || 0)));
@@ -268,7 +279,7 @@ function HouseholdLedger({ pin }) {
   const tabs = [
     { id: "dashboard", label: "대시보드" }, { id: "income", label: "수입" },
     { id: "fixed", label: "고정지출·용돈" }, { id: "variable", label: "공동지출내역" },
-    { id: "savings", label: "저축목표" }, { id: "debts", label: "대출관리" },
+    { id: "savings", label: "저축목표" }, { id: "assets", label: "자산현황" }, { id: "debts", label: "대출관리" },
   ];
   const monthTabs = ["income", "fixed", "variable"];
   const saveLabel = { idle: "저장됨", saving: "저장 중...", saved: "저장됨", error: "저장 실패 (연결 확인)" }[saveState];
@@ -304,11 +315,12 @@ function HouseholdLedger({ pin }) {
           <div style={styles.eyebrowRow}>누적 데이터 · 월과 무관하게 계속 관리돼요</div>
         )}
 
-        {tab === "dashboard" && <Dashboard totals={totals} savingsProgress={savingsProgress} debtProgress={debtProgress} categoryBreakdown={categoryBreakdown} data={data} monthHistory={monthHistory} />}
+        {tab === "dashboard" && <Dashboard totals={totals} savingsProgress={savingsProgress} debtProgress={debtProgress} assetTotals={assetTotals} categoryBreakdown={categoryBreakdown} data={data} monthHistory={monthHistory} />}
         {tab === "income" && <IncomeTab month={month} updateMonth={updateMonth} totals={totals} />}
         {tab === "fixed" && <FixedTab month={month} updateMonth={updateMonth} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} totals={totals} />}
         {tab === "variable" && <VariableTab month={month} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} />}
         {tab === "savings" && <SavingsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} />}
+        {tab === "assets" && <AssetsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} assetTotals={assetTotals} />}
         {tab === "debts" && <DebtsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} debtProgress={debtProgress} />}
       </div>
     </div>
@@ -319,7 +331,7 @@ function RatingDisplay({ value, label }) {
   return (<div style={styles.ratingBlock}><div style={styles.ratingRow}><span style={styles.ratingOrnament}/><span style={{...styles.ratingNumber,color:c.ink}}>{value}%</span><span style={styles.ratingOrnament}/></div><div style={styles.ratingLabel}>{label}</div></div>);
 }
 
-function Dashboard({ totals, savingsProgress, debtProgress, categoryBreakdown, data, monthHistory }) {
+function Dashboard({ totals, savingsProgress, debtProgress, assetTotals, categoryBreakdown, data, monthHistory }) {
   return (
     <div>
       <div className="grid3" style={styles.grid3}>
@@ -333,6 +345,11 @@ function Dashboard({ totals, savingsProgress, debtProgress, categoryBreakdown, d
         <LedgerLine label="공동 변동지출" value={totals.totalVariable} />
         <LedgerLine label="대출 상환액" value={totals.totalDebtMonthly} />
         <LedgerLine label="지출 합계" value={totals.totalExpense} strong />
+      </Card>
+      <Card title="자산 요약">
+        <LedgerLine label="총 자산 (예적금·주식·연금)" value={assetTotals.total} />
+        <LedgerLine label="대출 잔액" value={debtProgress.remaining} />
+        <LedgerLine label="순자산" value={assetTotals.total - debtProgress.remaining} strong />
       </Card>
       <div className="grid2" style={styles.grid2}>
         <Card title="저축 목표 달성률">
@@ -455,6 +472,63 @@ function SavingsTab({ data, addRow, removeRow, editRow }) {
   );
 }
 
+function Donut({ segments, total }) {
+  let acc = 0;
+  const stops = segments.map((seg) => {
+    const pct = total > 0 ? (seg.value / total) * 100 : 0;
+    const start = acc;
+    acc += pct;
+    return `${seg.color} ${start}% ${acc}%`;
+  }).join(", ");
+  const bg = total > 0 ? `conic-gradient(${stops})` : c.surfaceStrong;
+  return (
+    <div style={{ ...styles.donut, background: bg }}>
+      <div style={styles.donutHole}>
+        <div style={styles.donutHoleLabel}>총 자산</div>
+        <div style={styles.donutHoleValue}>{won(total)}<span style={styles.won}>원</span></div>
+      </div>
+    </div>
+  );
+}
+function LegendItem({ color, label, value }) {
+  return (<div style={styles.legendItem}><span style={{ ...styles.legendDot, background: color }} /><span style={styles.legendLabel}>{label}</span><span style={styles.legendValue}>{won(value)}원</span></div>);
+}
+
+function AssetsTab({ data, addRow, removeRow, editRow, assetTotals }) {
+  const groups = [
+    { key: "deposits", title: "예금 / 적금", color: c.primary, placeholder: "예: 청약저축" },
+    { key: "stocks", title: "주식 / 펀드", color: c.chartBlue, placeholder: "예: 삼성전자" },
+    { key: "pensions", title: "연금", color: c.chartGreen, placeholder: "예: 개인연금" },
+  ];
+  return (
+    <div>
+      <Card title="자산 구성">
+        <div style={styles.assetSummaryRow}>
+          <Donut segments={groups.map((g) => ({ value: assetTotals[g.key], color: g.color }))} total={assetTotals.total} />
+          <div style={styles.assetLegend}>
+            {groups.map((g) => (<LegendItem key={g.key} color={g.color} label={g.title} value={assetTotals[g.key]} />))}
+          </div>
+        </div>
+        <LedgerLine label="총 자산 합계" value={assetTotals.total} strong />
+      </Card>
+      {groups.map((g) => (
+        <div key={g.key} className="card-box" style={styles.card}>
+          <div style={styles.cardTitleRow}><div style={styles.cardTitle}>{g.title}</div><PillButton onClick={() => addRow(g.key, { name: "", amount: 0 })}>+ 항목 추가</PillButton></div>
+          {data[g.key].length === 0 && <EmptyState text={`보유 중인 ${g.title} 항목을 추가하세요.`} />}
+          {data[g.key].map((item) => (
+            <div key={item.id} style={styles.rowEditAsset}>
+              <input style={styles.inputText} placeholder={g.placeholder} value={item.name} onChange={(e) => editRow(g.key, item.id, "name", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="금액" type="number" value={item.amount} onChange={(e) => editRow(g.key, item.id, "amount", e.target.value)} />
+              <IconRemoveButton onClick={() => removeRow(g.key, item.id)} />
+            </div>
+          ))}
+          <LedgerLine label={`${g.title} 합계`} value={assetTotals[g.key]} strong />
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function DebtsTab({ data, addRow, removeRow, editRow, debtProgress }) {
   return (
     <div className="card-box" style={styles.card}>
@@ -551,6 +625,17 @@ const styles = {
   inputSelect: { fontSize: 13.5, padding: "10px 8px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0 },
   pillButton: { background: c.primary, color: c.onPrimary, border: "none", borderRadius: 999, padding: "10px 18px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
   iconRemove: { width: 32, height: 32, borderRadius: "50%", background: c.surfaceStrong, border: "none", color: c.muted, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center" },
+  rowEditAsset: { display: "grid", gridTemplateColumns: "1fr 130px 32px", gap: 8, marginBottom: 8, alignItems: "center" },
+  assetSummaryRow: { display: "flex", flexWrap: "wrap", alignItems: "center", gap: 28, marginBottom: 20 },
+  donut: { position: "relative", width: 140, height: 140, borderRadius: "50%", flexShrink: 0 },
+  donutHole: { position: "absolute", inset: 16, borderRadius: "50%", background: c.canvas, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center" },
+  donutHoleLabel: { fontSize: 11, color: c.muted, marginBottom: 2 },
+  donutHoleValue: { fontSize: 15, fontWeight: 700, color: c.ink },
+  assetLegend: { display: "flex", flexDirection: "column", gap: 10, flex: 1, minWidth: 180 },
+  legendItem: { display: "flex", alignItems: "center", gap: 8, fontSize: 13.5, color: c.body },
+  legendDot: { width: 10, height: 10, borderRadius: "50%", flexShrink: 0 },
+  legendLabel: { flex: 1 },
+  legendValue: { fontWeight: 600, color: c.ink, fontVariantNumeric: "tabular-nums" },
 };
 
 function App() {
