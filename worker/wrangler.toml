@@ -5,8 +5,8 @@ compatibility_date = "2024-11-01"
 [[d1_databases]]
 binding = "DB"
 database_name = "household-ledger"
-database_id = "REPLACE_AFTER_WRANGLER_D1_CREATE"
+database_id = "13127056-2947-4d54-8368-226786f32375"
 
 [vars]
-ALLOWED_ORIGIN = "https://YOUR_GITHUB_USERNAME.github.io"
+ALLOWED_ORIGIN = "https://saebyeolkim.github.io"
 # PIN은 여기 쓰지 말고 `wrangler secret put PIN` 으로 등록하세요
