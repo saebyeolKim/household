@@ -15,6 +15,8 @@
     -webkit-text-size-adjust: 100%;
   }
   * { -webkit-tap-highlight-color: transparent; }
+  button { outline: none; }
+  button:focus-visible { outline: 2px solid #ff385c; outline-offset: 2px; }
 
   /* ---- mobile-first layout: everything stacks by default ---- */
   .grid3, .grid2 { grid-template-columns: 1fr !important; gap: 12px !important; }
@@ -76,8 +78,8 @@ const won = (n) => (Number(n) || 0).toLocaleString("ko-KR");
 const uid = () => Math.random().toString(36).slice(2, 9);
 const monthKeyLabel = (key) => { const [y, m] = key.split("-").map(Number); return `${y}년 ${m}월`; };
 const addMonths = (key, delta) => { const [y, m] = key.split("-").map(Number); const d = new Date(y, m - 1 + delta, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
-const emptyMonth = () => ({ income: { husband: 0, wife: 0 }, allowance: { husband: 400000, wife: 400000 }, fixed: [], variable: [] });
-const cloneMonthForward = (src) => ({ income: { ...src.income }, allowance: { ...src.allowance }, fixed: src.fixed.map((f) => ({ ...f })), variable: [] });
+const emptyMonth = () => ({ income: { husband: 0, wife: 0 }, allowance: { husband: 400000, wife: 400000 }, fixed: [], variable: [], savingsPlan: [] });
+const cloneMonthForward = (src) => ({ income: { ...src.income }, allowance: { ...src.allowance }, fixed: src.fixed.map((f) => ({ ...f })), variable: [], savingsPlan: (src.savingsPlan || []).map((s) => ({ ...s, done: false, doneDate: "" })) });
 const DEFAULT_DATA = { currentMonth: START_MONTH, months: { [START_MONTH]: emptyMonth() }, savings: [], debts: [], deposits: [], stocks: [], pensions: [] };
 const CATEGORIES = ["식비", "생활용품", "문화/여가", "경조사", "의료", "교통", "기타"];
 
@@ -98,7 +100,11 @@ function migrate(raw) {
   } else {
     base = DEFAULT_DATA;
   }
-  return { ...base, deposits: base.deposits || [], stocks: base.stocks || [], pensions: base.pensions || [] };
+  const months = {};
+  Object.keys(base.months || {}).forEach((key) => {
+    months[key] = { ...base.months[key], savingsPlan: base.months[key].savingsPlan || [] };
+  });
+  return { ...base, months, deposits: base.deposits || [], stocks: base.stocks || [], pensions: base.pensions || [] };
 }
 
 /* ---------------- Cloudflare API helpers ---------------- */
@@ -278,10 +284,11 @@ function HouseholdLedger({ pin }) {
 
   const tabs = [
     { id: "dashboard", label: "대시보드" }, { id: "income", label: "수입" },
+    { id: "savingsPlan", label: "이번달 자금계획" },
     { id: "fixed", label: "고정지출·용돈" }, { id: "variable", label: "공동지출내역" },
     { id: "savings", label: "저축목표" }, { id: "assets", label: "자산현황" }, { id: "debts", label: "대출관리" },
   ];
-  const monthTabs = ["income", "fixed", "variable"];
+  const monthTabs = ["income", "savingsPlan", "fixed", "variable"];
   const saveLabel = { idle: "저장됨", saving: "저장 중...", saved: "저장됨", error: "저장 실패 (연결 확인)" }[saveState];
 
   return (
@@ -317,6 +324,7 @@ function HouseholdLedger({ pin }) {
 
         {tab === "dashboard" && <Dashboard totals={totals} savingsProgress={savingsProgress} debtProgress={debtProgress} assetTotals={assetTotals} categoryBreakdown={categoryBreakdown} data={data} monthHistory={monthHistory} />}
         {tab === "income" && <IncomeTab month={month} updateMonth={updateMonth} totals={totals} />}
+        {tab === "savingsPlan" && <SavingsPlanTab month={month} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} totals={totals} />}
         {tab === "fixed" && <FixedTab month={month} updateMonth={updateMonth} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} totals={totals} />}
         {tab === "variable" && <VariableTab month={month} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} />}
         {tab === "savings" && <SavingsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} />}
@@ -399,14 +407,74 @@ function ProgressBar({ pct, tone }) { const color = tone === "primary" ? c.prima
 function EmptyState({ text }) { return <div style={styles.emptyState}>{text}</div>; }
 
 function IncomeTab({ month, updateMonth, totals }) {
-  return (<Card title="이번 달 수입 입력"><div className="grid2" style={styles.grid2}><FieldMoney label="남편 급여" value={month.income.husband} onChange={(v) => updateMonth(["income", "husband"], v)} /><FieldMoney label="아내 급여" value={month.income.wife} onChange={(v) => updateMonth(["income", "wife"], v)} /></div><LedgerLine label="총수입 합계" value={totals.totalIncome} strong /></Card>);
+  return (<Card title="이번 달 수입 입력"><div className="grid2" style={styles.grid2}><FieldMoney label="인식 급여" value={month.income.husband} onChange={(v) => updateMonth(["income", "husband"], v)} /><FieldMoney label="새별 급여" value={month.income.wife} onChange={(v) => updateMonth(["income", "wife"], v)} /></div><LedgerLine label="총수입 합계" value={totals.totalIncome} strong /></Card>);
+}
+
+function SavingsPlanTab({ month, addMonthRow, removeMonthRow, editMonthRow, totals }) {
+  const plan = month.savingsPlan || [];
+  const totalPercent = plan.reduce((s, x) => s + (Number(x.percent) || 0), 0);
+  const plannedAmount = (pct) => Math.round((totals.totalIncome * (Number(pct) || 0)) / 100);
+  const totalPlanned = plannedAmount(totalPercent);
+  const doneCount = plan.filter((x) => x.done).length;
+  const doneAmount = plan.filter((x) => x.done).reduce((s, x) => s + plannedAmount(x.percent), 0);
+
+  const toggleDone = (id, checked) => {
+    editMonthRow("savingsPlan", id, "done", checked);
+    const item = plan.find((x) => x.id === id);
+    if (checked && item && !item.doneDate) {
+      editMonthRow("savingsPlan", id, "doneDate", new Date().toISOString().slice(0, 10));
+    }
+  };
+
+  const leftover = totals.totalIncome - totals.totalExpense - doneAmount;
+
+  return (
+    <div>
+      <Card title="이번 달 자금 흐름 확인">
+        <LedgerLine label="총 수입" value={totals.totalIncome} />
+        <LedgerLine label="총 지출 (고정·용돈·변동·대출)" value={totals.totalExpense} />
+        <LedgerLine label={`저축 완료 (${doneCount}/${plan.length})`} value={doneAmount} />
+        <LedgerLine label={leftover >= 0 ? "남는 금액 (미배정)" : "부족액 (초과 지출)"} value={Math.abs(leftover)} strong />
+      </Card>
+      <Card title="저축 계획 (선저축 후지출)">
+        <div style={styles.ledgerLine}><span>총 배분 비율</span><span style={styles.mono}>{totalPercent}%</span></div>
+        <LedgerLine label="계획 저축액 (수입 기준)" value={totalPlanned} />
+      </Card>
+      <div className="card-box" style={styles.card}>
+        <div style={styles.cardTitleRow}><div style={styles.cardTitle}>저축 항목</div><PillButton onClick={() => addMonthRow("savingsPlan", { name: "", percent: 0, done: false, doneDate: "" })}>+ 항목 추가</PillButton></div>
+        {plan.length === 0 && <EmptyState text="예: 청년도약계좌 20%, 청약저축 10% 처럼 수입 대비 저축 비율을 정해보세요." />}
+        {plan.map((s) => (
+          <div key={s.id} style={styles.itemRow}>
+            <div style={styles.rowEditSavingsPlan}>
+              <input style={styles.inputText} placeholder="예: 청년도약계좌" value={s.name} onChange={(e) => editMonthRow("savingsPlan", s.id, "name", e.target.value)} />
+              <div style={styles.percentWrap}>
+                <input style={{ ...styles.inputMoney, paddingRight: 26, width: 60 }} placeholder="비율" type="number" value={s.percent} onChange={(e) => editMonthRow("savingsPlan", s.id, "percent", e.target.value)} />
+                <span style={styles.percentSign}>%</span>
+              </div>
+              <IconRemoveButton onClick={() => removeMonthRow("savingsPlan", s.id)} />
+            </div>
+            <div style={styles.savingsPlanMeta}>
+              <label style={styles.checkLabel}>
+                <input type="checkbox" checked={!!s.done} onChange={(e) => toggleDone(s.id, e.target.checked)} />
+                저축 완료
+              </label>
+              {s.done && (
+                <input style={styles.inputDate} type="date" value={s.doneDate || ""} onChange={(e) => editMonthRow("savingsPlan", s.id, "doneDate", e.target.value)} />
+              )}
+              <span style={styles.savingsPlanAmount}>{won(plannedAmount(s.percent))}원</span>
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function FixedTab({ month, updateMonth, addMonthRow, removeMonthRow, editMonthRow, totals }) {
   return (
     <div>
       <Card title="용돈 설정 (내역 기록 없이 금액만 관리)">
-        <div className="grid2" style={styles.grid2}><FieldMoney label="남편 용돈" value={month.allowance.husband} onChange={(v) => updateMonth(["allowance", "husband"], v)} /><FieldMoney label="아내 용돈" value={month.allowance.wife} onChange={(v) => updateMonth(["allowance", "wife"], v)} /></div>
+        <div className="grid2" style={styles.grid2}><FieldMoney label="인식 용돈" value={month.allowance.husband} onChange={(v) => updateMonth(["allowance", "husband"], v)} /><FieldMoney label="새별 용돈" value={month.allowance.wife} onChange={(v) => updateMonth(["allowance", "wife"], v)} /></div>
         <LedgerLine label="용돈 합계" value={totals.totalAllowance} strong />
       </Card>
       <div className="card-box" style={styles.card}>
@@ -574,7 +642,7 @@ const styles = {
   saveIndicator: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, transition: "color 0.3s ease" },
   saveDot: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
   navRow: { maxWidth: 960, margin: "0 auto", display: "flex", gap: 8, padding: "14px 24px 16px 24px", overflowX: "auto" },
-  navPill: { flexShrink: 0, background: c.canvas, border: `1px solid ${c.hairline}`, borderRadius: 999, padding: "9px 18px", fontSize: 14, fontWeight: 600, color: c.body, cursor: "pointer", whiteSpace: "nowrap" },
+  navPill: { flexShrink: 0, background: c.canvas, borderWidth: 1, borderStyle: "solid", borderColor: c.hairline, borderRadius: 999, padding: "9px 18px", fontSize: 14, fontWeight: 600, color: c.body, cursor: "pointer", whiteSpace: "nowrap" },
   navPillActive: { background: c.ink, borderColor: c.ink, color: c.onPrimary },
   page: { maxWidth: 960, margin: "0 auto", padding: "24px 24px 48px 24px" },
   eyebrowRow: { fontSize: 13, fontWeight: 600, color: c.muted, marginBottom: 16 },
@@ -636,6 +704,12 @@ const styles = {
   legendDot: { width: 10, height: 10, borderRadius: "50%", flexShrink: 0 },
   legendLabel: { flex: 1 },
   legendValue: { fontWeight: 600, color: c.ink, fontVariantNumeric: "tabular-nums" },
+  rowEditSavingsPlan: { display: "grid", gridTemplateColumns: "1fr 100px 32px", gap: 8, marginBottom: 10, alignItems: "center" },
+  percentWrap: { position: "relative", display: "flex", alignItems: "center" },
+  percentSign: { position: "absolute", right: 12, fontSize: 13.5, color: c.muted, pointerEvents: "none" },
+  savingsPlanMeta: { display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap", paddingLeft: 2 },
+  checkLabel: { display: "flex", alignItems: "center", gap: 6, fontSize: 13.5, color: c.body, cursor: "pointer" },
+  savingsPlanAmount: { marginLeft: "auto", fontSize: 13.5, fontWeight: 600, color: c.ink, fontVariantNumeric: "tabular-nums" },
 };
 
 function App() {
