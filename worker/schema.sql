@@ -1,0 +1,5 @@
+CREATE TABLE IF NOT EXISTS ledger (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  data TEXT NOT NULL,
+  updated_at TEXT
+);

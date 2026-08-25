@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>우리집 통장</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  @import url('https://cdn.jsdelivr.net/gh/orioncactus/pretendard@v1.3.9/dist/web/variable/pretendardvariable.css');
+  html, body, #root { height: 100%; margin: 0; }
+  body {
+    font-family: 'Pretendard Variable', Pretendard, -apple-system, system-ui, sans-serif;
+    -webkit-text-size-adjust: 100%;
+  }
+  * { -webkit-tap-highlight-color: transparent; }
+
+  /* ---- mobile-first layout: everything stacks by default ---- */
+  .grid3, .grid2 { grid-template-columns: 1fr !important; gap: 12px !important; }
+  .row-edit { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+  .row-edit .field-remove { grid-column: 2 / 3 !important; justify-self: end; }
+  .row-edit-wide { grid-template-columns: 1fr 1fr !important; gap: 8px !important; }
+  .row-edit-wide .field-remove { grid-column: 2 / 3 !important; justify-self: end; }
+
+  .topnav-inner { padding: 16px 16px 0 16px !important; }
+  .nav-row { padding: 12px 16px 14px 16px !important; gap: 6px !important; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .nav-row::-webkit-scrollbar { display: none; }
+  .nav-pill { padding: 10px 16px !important; font-size: 13.5px !important; min-height: 40px; }
+  .page-wrap { padding: 16px 16px 40px 16px !important; }
+  .card-box { padding: 18px !important; }
+  .month-arrow-btn { width: 44px !important; height: 44px !important; }
+  .icon-remove-btn { width: 36px !important; height: 36px !important; }
+  .history-row { grid-template-columns: 1fr 1fr !important; row-gap: 4px !important; }
+  .history-row .h-month { grid-column: 1 / 3 !important; }
+
+  input, select { font-size: 16px !important; } /* iOS 자동 확대 방지 */
+
+  /* ---- desktop / wide screens: open back up ---- */
+  @media (min-width: 640px) {
+    .grid3 { grid-template-columns: repeat(3, 1fr) !important; gap: 16px !important; }
+    .grid2 { grid-template-columns: 1fr 1fr !important; gap: 16px !important; }
+    .row-edit { grid-template-columns: 1fr 130px 90px 32px !important; }
+    .row-edit .field-remove { grid-column: auto !important; justify-self: auto; }
+    .row-edit-wide { grid-template-columns: 1fr 1fr 130px 1fr 32px !important; }
+    .row-edit-wide .field-remove { grid-column: auto !important; justify-self: auto; }
+    .topnav-inner { padding: 20px 24px 0 24px !important; }
+    .nav-row { padding: 14px 24px 16px 24px !important; gap: 8px !important; }
+    .nav-pill { padding: 9px 18px !important; font-size: 14px !important; }
+    .page-wrap { padding: 24px 24px 48px 24px !important; }
+    .card-box { padding: 24px !important; }
+    .history-row { grid-template-columns: 90px 1fr 1fr 1fr !important; }
+    .history-row .h-month { grid-column: auto; }
+    input, select { font-size: 13.5px !important; }
+    .field-money-full input { font-size: 16px !important; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<!--
+  ⚙️ 배포 전 여기만 수정하세요
+  Cloudflare Worker를 배포한 뒤 나오는 주소를 넣으면 됩니다.
+  예: https://household-ledger-api.yourname.workers.dev
+-->
+<script>
+  window.API_BASE = "https://household-ledger-api.YOUR_SUBDOMAIN.workers.dev";
+</script>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo } = React;
+
+const START_MONTH = "2026-08";
+const won = (n) => (Number(n) || 0).toLocaleString("ko-KR");
+const uid = () => Math.random().toString(36).slice(2, 9);
+const monthKeyLabel = (key) => { const [y, m] = key.split("-").map(Number); return `${y}년 ${m}월`; };
+const addMonths = (key, delta) => { const [y, m] = key.split("-").map(Number); const d = new Date(y, m - 1 + delta, 1); return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`; };
+const emptyMonth = () => ({ income: { husband: 0, wife: 0 }, allowance: { husband: 400000, wife: 400000 }, fixed: [], variable: [] });
+const cloneMonthForward = (src) => ({ income: { ...src.income }, allowance: { ...src.allowance }, fixed: src.fixed.map((f) => ({ ...f })), variable: [] });
+const DEFAULT_DATA = { currentMonth: START_MONTH, months: { [START_MONTH]: emptyMonth() }, savings: [], debts: [] };
+const CATEGORIES = ["식비", "생활용품", "문화/여가", "경조사", "의료", "교통", "기타"];
+
+const c = {
+  canvas: "#ffffff", page: "#f7f7f7", surfaceSoft: "#f7f7f7", surfaceStrong: "#f2f2f2",
+  hairline: "#dddddd", hairlineSoft: "#ebebeb", borderStrong: "#c1c1c1",
+  ink: "#222222", body: "#3f3f3f", muted: "#6a6a6a", mutedSoft: "#929292",
+  primary: "#ff385c", primaryActive: "#e00b41", primaryDisabled: "#ffd1da", onPrimary: "#ffffff", error: "#c13515",
+};
+const shadow1 = "rgba(0,0,0,0.02) 0 0 0 1px, rgba(0,0,0,0.04) 0 2px 6px 0, rgba(0,0,0,0.1) 0 4px 8px 0";
+
+function migrate(raw) {
+  if (raw && raw.months) return raw;
+  if (raw && raw.income) {
+    return { currentMonth: START_MONTH, months: { [START_MONTH]: { income: raw.income, allowance: raw.allowance, fixed: raw.fixed || [], variable: raw.variable || [] } }, savings: raw.savings || [], debts: raw.debts || [] };
+  }
+  return DEFAULT_DATA;
+}
+
+/* ---------------- Cloudflare API helpers ---------------- */
+async function apiGet(pin) {
+  const res = await fetch(`${window.API_BASE}/api/data`, { headers: { "X-Pin": pin } });
+  if (res.status === 401) throw new Error("PIN_INVALID");
+  if (!res.ok) throw new Error("FETCH_FAILED");
+  const json = await res.json();
+  return json;
+}
+async function apiPut(pin, data) {
+  const res = await fetch(`${window.API_BASE}/api/data`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json", "X-Pin": pin },
+    body: JSON.stringify(data),
+  });
+  if (res.status === 401) throw new Error("PIN_INVALID");
+  if (!res.ok) throw new Error("SAVE_FAILED");
+  return res.json();
+}
+
+/* ---------------- PIN gate ---------------- */
+function PinGate({ onUnlock }) {
+  const [pin, setPin] = useState(localStorage.getItem("ledger-pin") || "");
+  const [error, setError] = useState("");
+  const [checking, setChecking] = useState(false);
+
+  const submit = async () => {
+    setChecking(true);
+    setError("");
+    try {
+      await apiGet(pin);
+      localStorage.setItem("ledger-pin", pin);
+      onUnlock(pin);
+    } catch (e) {
+      setError(e.message === "PIN_INVALID" ? "PIN이 올바르지 않아요." : "서버에 연결할 수 없어요. API 주소를 확인해주세요.");
+    } finally {
+      setChecking(false);
+    }
+  };
+
+  return (
+    <div style={{ minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", background: c.page }}>
+      <div style={{ background: c.canvas, border: `1px solid ${c.hairline}`, borderRadius: 14, padding: 32, width: 320, boxShadow: shadow1 }}>
+        <div style={{ fontSize: 20, fontWeight: 700, marginBottom: 4, color: c.ink }}>우리집 통장</div>
+        <div style={{ fontSize: 13, color: c.muted, marginBottom: 20 }}>PIN을 입력하면 데이터를 불러와요</div>
+        <input
+          type="password"
+          value={pin}
+          onChange={(e) => setPin(e.target.value)}
+          onKeyDown={(e) => e.key === "Enter" && submit()}
+          placeholder="PIN 번호"
+          style={{ width: "100%", fontSize: 16, padding: "14px", border: `1px solid ${c.hairline}`, borderRadius: 8, marginBottom: 12, boxSizing: "border-box" }}
+        />
+        {error && <div style={{ color: c.error, fontSize: 12.5, marginBottom: 12 }}>{error}</div>}
+        <button
+          onClick={submit}
+          disabled={checking || !pin}
+          style={{ width: "100%", background: c.primary, color: "#fff", border: "none", borderRadius: 999, padding: "12px", fontSize: 15, fontWeight: 600, cursor: "pointer", opacity: checking || !pin ? 0.6 : 1 }}
+        >
+          {checking ? "확인 중..." : "들어가기"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function HouseholdLedger({ pin }) {
+  const [data, setData] = useState(DEFAULT_DATA);
+  const [tab, setTab] = useState("dashboard");
+  const [loaded, setLoaded] = useState(false);
+  const [saveState, setSaveState] = useState("idle"); // idle | saving | saved | error
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const raw = await apiGet(pin);
+        if (raw) setData(migrate(raw));
+      } catch (e) {
+        console.error("불러오기 실패", e);
+      } finally {
+        setLoaded(true);
+      }
+    })();
+  }, []);
+
+  useEffect(() => {
+    if (!loaded) return;
+    setSaveState("saving");
+    const t = setTimeout(async () => {
+      try {
+        await apiPut(pin, data);
+        setSaveState("saved");
+        setTimeout(() => setSaveState("idle"), 1200);
+      } catch (e) {
+        setSaveState("error");
+      }
+    }, 900);
+    return () => clearTimeout(t);
+  }, [data, loaded]);
+
+  const currentMonth = data.currentMonth || START_MONTH;
+  const month = data.months[currentMonth] || emptyMonth();
+  const canGoPrev = currentMonth > START_MONTH;
+
+  const goMonth = (delta) => {
+    setData((prev) => {
+      const from = prev.currentMonth || START_MONTH;
+      const to = addMonths(from, delta);
+      if (delta < 0 && to < START_MONTH) return prev;
+      const next = structuredClone(prev);
+      if (!next.months[to]) next.months[to] = cloneMonthForward(next.months[from] || emptyMonth());
+      next.currentMonth = to;
+      return next;
+    });
+  };
+
+  const updateMonth = (path, value) => {
+    setData((prev) => {
+      const next = structuredClone(prev);
+      let obj = next.months[next.currentMonth];
+      for (let i = 0; i < path.length - 1; i++) obj = obj[path[i]];
+      obj[path[path.length - 1]] = value;
+      return next;
+    });
+  };
+  const addMonthRow = (key, row) => setData((prev) => { const next = structuredClone(prev); next.months[next.currentMonth][key].push({ id: uid(), ...row }); return next; });
+  const removeMonthRow = (key, id) => setData((prev) => { const next = structuredClone(prev); next.months[next.currentMonth][key] = next.months[next.currentMonth][key].filter((r) => r.id !== id); return next; });
+  const editMonthRow = (key, id, field, value) => setData((prev) => { const next = structuredClone(prev); next.months[next.currentMonth][key] = next.months[next.currentMonth][key].map((r) => (r.id === id ? { ...r, [field]: value } : r)); return next; });
+
+  const addRow = (key, row) => setData((prev) => ({ ...prev, [key]: [...prev[key], { id: uid(), ...row }] }));
+  const removeRow = (key, id) => setData((prev) => ({ ...prev, [key]: prev[key].filter((r) => r.id !== id) }));
+  const editRow = (key, id, field, value) => setData((prev) => ({ ...prev, [key]: prev[key].map((r) => (r.id === id ? { ...r, [field]: value } : r)) }));
+
+  const totals = useMemo(() => {
+    const totalIncome = (Number(month.income.husband) || 0) + (Number(month.income.wife) || 0);
+    const totalFixed = month.fixed.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const totalAllowance = (Number(month.allowance.husband) || 0) + (Number(month.allowance.wife) || 0);
+    const totalVariable = month.variable.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    const totalDebtMonthly = data.debts.reduce((s, x) => s + (Number(x.monthly) || 0), 0);
+    const totalExpense = totalFixed + totalAllowance + totalVariable + totalDebtMonthly;
+    return { totalIncome, totalFixed, totalAllowance, totalVariable, totalDebtMonthly, totalExpense, net: totalIncome - totalExpense };
+  }, [month, data.debts]);
+
+  const savingsProgress = useMemo(() => {
+    const target = data.savings.reduce((s, x) => s + (Number(x.target) || 0), 0);
+    const current = data.savings.reduce((s, x) => s + (Number(x.current) || 0), 0);
+    return { target, current, pct: target > 0 ? Math.min(100, Math.round((current / target) * 100)) : 0 };
+  }, [data.savings]);
+
+  const debtProgress = useMemo(() => {
+    const principal = data.debts.reduce((s, x) => s + (Number(x.principal) || 0), 0);
+    const remaining = data.debts.reduce((s, x) => s + (Number(x.remaining) || 0), 0);
+    return { principal, remaining, pct: principal > 0 ? Math.min(100, Math.round(((principal - remaining) / principal) * 100)) : 0 };
+  }, [data.debts]);
+
+  const categoryBreakdown = useMemo(() => {
+    const map = {};
+    month.variable.forEach((v) => (map[v.category] = (map[v.category] || 0) + (Number(v.amount) || 0)));
+    const arr = Object.entries(map).sort((a, b) => b[1] - a[1]);
+    return { arr, max: arr.length ? arr[0][1] : 0 };
+  }, [month.variable]);
+
+  const monthHistory = useMemo(() => Object.keys(data.months).sort().map((key) => {
+    const m = data.months[key];
+    const income = (Number(m.income.husband) || 0) + (Number(m.income.wife) || 0);
+    const expense = m.fixed.reduce((s, x) => s + (Number(x.amount) || 0), 0) + (Number(m.allowance.husband) || 0) + (Number(m.allowance.wife) || 0) + m.variable.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+    return { key, income, expense, net: income - expense };
+  }), [data.months]);
+
+  const tabs = [
+    { id: "dashboard", label: "대시보드" }, { id: "income", label: "수입" },
+    { id: "fixed", label: "고정지출·용돈" }, { id: "variable", label: "공동지출내역" },
+    { id: "savings", label: "저축목표" }, { id: "debts", label: "대출관리" },
+  ];
+  const monthTabs = ["income", "fixed", "variable"];
+  const saveLabel = { idle: "저장됨", saving: "저장 중...", saved: "저장됨", error: "저장 실패 (연결 확인)" }[saveState];
+
+  return (
+    <div style={styles.root}>
+      <div style={styles.topnav}>
+        <div className="topnav-inner" style={styles.topnavInner}>
+          <div style={styles.wordmark}><span style={styles.wordmarkDot}>●</span> 우리집 통장</div>
+          <div style={{ ...styles.saveIndicator, color: saveState === "error" ? c.error : c.muted }}>
+            <span style={{ ...styles.saveDot, background: saveState === "error" ? c.error : c.primary }} />
+            {saveLabel}
+          </div>
+        </div>
+        <div className="nav-row" style={styles.navRow}>
+          {tabs.map((t) => (
+            <button key={t.id} className="nav-pill" onClick={() => setTab(t.id)} style={{ ...styles.navPill, ...(tab === t.id ? styles.navPillActive : {}) }}>{t.label}</button>
+          ))}
+        </div>
+      </div>
+
+      <div className="page-wrap" style={styles.page}>
+        {monthTabs.includes(tab) || tab === "dashboard" ? (
+          <div style={styles.monthNav}>
+            <button className="month-arrow-btn" style={{ ...styles.monthArrow, ...(canGoPrev ? {} : styles.monthArrowDisabled) }} onClick={() => canGoPrev && goMonth(-1)} disabled={!canGoPrev}>‹</button>
+            <div style={styles.monthLabelWrap}>
+              <div style={styles.monthLabel}>{monthKeyLabel(currentMonth)}</div>
+              {currentMonth === START_MONTH && <div style={styles.monthStartTag}>시작월</div>}
+            </div>
+            <button className="month-arrow-btn" style={styles.monthArrow} onClick={() => goMonth(1)}>›</button>
+          </div>
+        ) : (
+          <div style={styles.eyebrowRow}>누적 데이터 · 월과 무관하게 계속 관리돼요</div>
+        )}
+
+        {tab === "dashboard" && <Dashboard totals={totals} savingsProgress={savingsProgress} debtProgress={debtProgress} categoryBreakdown={categoryBreakdown} data={data} monthHistory={monthHistory} />}
+        {tab === "income" && <IncomeTab month={month} updateMonth={updateMonth} totals={totals} />}
+        {tab === "fixed" && <FixedTab month={month} updateMonth={updateMonth} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} totals={totals} />}
+        {tab === "variable" && <VariableTab month={month} addMonthRow={addMonthRow} removeMonthRow={removeMonthRow} editMonthRow={editMonthRow} />}
+        {tab === "savings" && <SavingsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} />}
+        {tab === "debts" && <DebtsTab data={data} addRow={addRow} removeRow={removeRow} editRow={editRow} debtProgress={debtProgress} />}
+      </div>
+    </div>
+  );
+}
+
+function RatingDisplay({ value, label }) {
+  return (<div style={styles.ratingBlock}><div style={styles.ratingRow}><span style={styles.ratingOrnament}/><span style={{...styles.ratingNumber,color:c.ink}}>{value}%</span><span style={styles.ratingOrnament}/></div><div style={styles.ratingLabel}>{label}</div></div>);
+}
+
+function Dashboard({ totals, savingsProgress, debtProgress, categoryBreakdown, data, monthHistory }) {
+  return (
+    <div>
+      <div className="grid3" style={styles.grid3}>
+        <SummaryCard label="이번 달 총수입" value={totals.totalIncome} />
+        <SummaryCard label="이번 달 총지출" value={totals.totalExpense} />
+        <SummaryCard label="순저축액" value={totals.net} highlight />
+      </div>
+      <Card title="지출 구성">
+        <LedgerLine label="고정지출" value={totals.totalFixed} />
+        <LedgerLine label="부부 용돈 합계" value={totals.totalAllowance} />
+        <LedgerLine label="공동 변동지출" value={totals.totalVariable} />
+        <LedgerLine label="대출 상환액" value={totals.totalDebtMonthly} />
+        <LedgerLine label="지출 합계" value={totals.totalExpense} strong />
+      </Card>
+      <div className="grid2" style={styles.grid2}>
+        <Card title="저축 목표 달성률">
+          <RatingDisplay value={savingsProgress.pct} label="SAVINGS GOAL" />
+          <ProgressBar pct={savingsProgress.pct} tone="primary" />
+          <div style={styles.subtle}>{won(savingsProgress.current)}원 / {won(savingsProgress.target)}원 · 목표 {data.savings.length}개</div>
+        </Card>
+        <Card title="대출 상환 진행률">
+          <RatingDisplay value={debtProgress.pct} label="PAID OFF" />
+          <ProgressBar pct={debtProgress.pct} tone="ink" />
+          <div style={styles.subtle}>잔액 {won(debtProgress.remaining)}원</div>
+        </Card>
+      </div>
+      <Card title="이번 달 카테고리별 공동지출">
+        {categoryBreakdown.arr.length === 0 && <EmptyState text="아직 기록된 공동지출이 없어요. '공동지출내역' 탭에서 추가해보세요." />}
+        {categoryBreakdown.arr.map(([cat, amt]) => (
+          <div key={cat} style={styles.barRow}>
+            <div style={styles.barLabel}>{cat}</div>
+            <div style={styles.barTrack}><div style={{ ...styles.barFill, width: `${categoryBreakdown.max ? (amt / categoryBreakdown.max) * 100 : 0}%` }} /></div>
+            <div style={styles.barValue}>{won(amt)}원</div>
+          </div>
+        ))}
+      </Card>
+      {monthHistory.length > 1 && (
+        <Card title="월별 추이">
+          {monthHistory.slice().reverse().map((h) => (
+            <div key={h.key} className="history-row" style={styles.historyRow}>
+              <span className="h-month" style={styles.historyMonth}>{monthKeyLabel(h.key)}</span>
+              <span style={styles.historyStat}>수입 <b style={styles.mono}>{won(h.income)}</b></span>
+              <span style={styles.historyStat}>지출 <b style={styles.mono}>{won(h.expense)}</b></span>
+              <span style={{ ...styles.historyStat, color: h.net < 0 ? c.error : c.ink, fontWeight: 700 }}>순 {h.net < 0 ? "-" : ""}{won(Math.abs(h.net))}</span>
+            </div>
+          ))}
+        </Card>
+      )}
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, highlight }) {
+  const color = value < 0 ? c.error : c.ink;
+  return (<div style={{ ...styles.summaryCard, ...(highlight ? { boxShadow: shadow1 } : {}) }}><div style={styles.summaryLabel}>{label}</div><div style={{ ...styles.summaryValue, color }}>{value < 0 ? "-" : ""}{won(Math.abs(value))}<span style={styles.won}>원</span></div></div>);
+}
+function Card({ title, children }) { return (<div className="card-box" style={styles.card}>{title && <div style={styles.cardTitle}>{title}</div>}{children}</div>); }
+function LedgerLine({ label, value, strong }) { return (<div style={{ ...styles.ledgerLine, ...(strong ? styles.ledgerLineStrong : {}) }}><span>{label}</span><span style={styles.mono}>{won(value)}원</span></div>); }
+function ProgressBar({ pct, tone }) { const color = tone === "primary" ? c.primary : c.ink; return (<div style={styles.progressTrack}><div style={{ ...styles.progressFill, width: `${pct}%`, background: color }} /></div>); }
+function EmptyState({ text }) { return <div style={styles.emptyState}>{text}</div>; }
+
+function IncomeTab({ month, updateMonth, totals }) {
+  return (<Card title="이번 달 수입 입력"><div className="grid2" style={styles.grid2}><FieldMoney label="남편 급여" value={month.income.husband} onChange={(v) => updateMonth(["income", "husband"], v)} /><FieldMoney label="아내 급여" value={month.income.wife} onChange={(v) => updateMonth(["income", "wife"], v)} /></div><LedgerLine label="총수입 합계" value={totals.totalIncome} strong /></Card>);
+}
+
+function FixedTab({ month, updateMonth, addMonthRow, removeMonthRow, editMonthRow, totals }) {
+  return (
+    <div>
+      <Card title="용돈 설정 (내역 기록 없이 금액만 관리)">
+        <div className="grid2" style={styles.grid2}><FieldMoney label="남편 용돈" value={month.allowance.husband} onChange={(v) => updateMonth(["allowance", "husband"], v)} /><FieldMoney label="아내 용돈" value={month.allowance.wife} onChange={(v) => updateMonth(["allowance", "wife"], v)} /></div>
+        <LedgerLine label="용돈 합계" value={totals.totalAllowance} strong />
+      </Card>
+      <div className="card-box" style={styles.card}>
+        <div style={styles.cardTitleRow}><div style={styles.cardTitle}>고정지출 항목</div><PillButton onClick={() => addMonthRow("fixed", { name: "", amount: 0, day: "" })}>+ 항목 추가</PillButton></div>
+        {month.fixed.length === 0 && <EmptyState text="월세, 관리비, 통신비, 보험료 같은 매달 반복되는 지출을 추가하세요." />}
+        {month.fixed.map((f) => (
+          <div key={f.id} className="row-edit" style={styles.rowEdit}>
+            <input style={styles.inputText} placeholder="항목명" value={f.name} onChange={(e) => editMonthRow("fixed", f.id, "name", e.target.value)} />
+            <input style={styles.inputMoney} placeholder="금액" type="number" value={f.amount} onChange={(e) => editMonthRow("fixed", f.id, "amount", e.target.value)} />
+            <input style={styles.inputDay} placeholder="결제일" value={f.day} onChange={(e) => editMonthRow("fixed", f.id, "day", e.target.value)} />
+            <IconRemoveButton onClick={() => removeMonthRow("fixed", f.id)} />
+          </div>
+        ))}
+        <LedgerLine label="고정지출 합계" value={totals.totalFixed} strong />
+      </div>
+    </div>
+  );
+}
+
+function VariableTab({ month, addMonthRow, removeMonthRow, editMonthRow }) {
+  const total = month.variable.reduce((s, x) => s + (Number(x.amount) || 0), 0);
+  return (
+    <div className="card-box" style={styles.card}>
+      <div style={styles.cardTitleRow}><div style={styles.cardTitle}>공동 지출 내역</div><PillButton onClick={() => addMonthRow("variable", { date: new Date().toISOString().slice(0, 10), category: CATEGORIES[0], amount: 0, memo: "" })}>+ 지출 추가</PillButton></div>
+      {month.variable.length === 0 && <EmptyState text="용돈이 아닌 공동 지출(식비, 생활용품 등)만 여기에 기록하세요." />}
+      {month.variable.slice().sort((a, b) => (a.date < b.date ? 1 : -1)).map((v) => (
+        <div key={v.id} className="row-edit-wide" style={styles.rowEditWide}>
+          <input style={styles.inputDate} type="date" value={v.date} onChange={(e) => editMonthRow("variable", v.id, "date", e.target.value)} />
+          <select style={styles.inputSelect} value={v.category} onChange={(e) => editMonthRow("variable", v.id, "category", e.target.value)}>
+            {CATEGORIES.map((cat) => (<option key={cat} value={cat}>{cat}</option>))}
+          </select>
+          <input style={styles.inputMoney} placeholder="금액" type="number" value={v.amount} onChange={(e) => editMonthRow("variable", v.id, "amount", e.target.value)} />
+          <input style={styles.inputText} placeholder="메모" value={v.memo} onChange={(e) => editMonthRow("variable", v.id, "memo", e.target.value)} />
+          <IconRemoveButton onClick={() => removeMonthRow("variable", v.id)} />
+        </div>
+      ))}
+      <LedgerLine label="공동지출 합계" value={total} strong />
+    </div>
+  );
+}
+
+function SavingsTab({ data, addRow, removeRow, editRow }) {
+  return (
+    <div className="card-box" style={styles.card}>
+      <div style={styles.cardTitleRow}><div style={styles.cardTitle}>저축 목표</div><PillButton onClick={() => addRow("savings", { name: "", target: 0, current: 0 })}>+ 목표 추가</PillButton></div>
+      {data.savings.length === 0 && <EmptyState text="예: 내 집 마련 3년, 여행자금 500만원 같은 목표를 추가해보세요." />}
+      {data.savings.map((s) => {
+        const pct = s.target > 0 ? Math.min(100, Math.round((s.current / s.target) * 100)) : 0;
+        return (
+          <div key={s.id} style={styles.itemRow}>
+            <div className="row-edit-wide" style={styles.rowEditWide}>
+              <input style={styles.inputText} placeholder="목표명" value={s.name} onChange={(e) => editRow("savings", s.id, "name", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="목표금액" type="number" value={s.target} onChange={(e) => editRow("savings", s.id, "target", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="현재금액" type="number" value={s.current} onChange={(e) => editRow("savings", s.id, "current", e.target.value)} />
+              <IconRemoveButton onClick={() => removeRow("savings", s.id)} />
+            </div>
+            <ProgressBar pct={pct} tone="primary" />
+            <div style={styles.subtle}>{pct}% 달성 · {won(s.current)}원 / {won(s.target)}원</div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function DebtsTab({ data, addRow, removeRow, editRow, debtProgress }) {
+  return (
+    <div className="card-box" style={styles.card}>
+      <div style={styles.cardTitleRow}><div style={styles.cardTitle}>대출 관리</div><PillButton onClick={() => addRow("debts", { name: "", principal: 0, remaining: 0, monthly: 0, rate: "", due: "" })}>+ 대출 추가</PillButton></div>
+      {data.debts.length === 0 && <EmptyState text="대출명, 원금, 남은 원금, 월 상환액을 입력하면 상환 진행률이 계산돼요." />}
+      {data.debts.map((d) => {
+        const pct = d.principal > 0 ? Math.min(100, Math.round(((d.principal - d.remaining) / d.principal) * 100)) : 0;
+        return (
+          <div key={d.id} style={styles.itemRow}>
+            <div className="row-edit-wide" style={styles.rowEditWide}>
+              <input style={styles.inputText} placeholder="대출명" value={d.name} onChange={(e) => editRow("debts", d.id, "name", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="총원금" type="number" value={d.principal} onChange={(e) => editRow("debts", d.id, "principal", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="남은원금" type="number" value={d.remaining} onChange={(e) => editRow("debts", d.id, "remaining", e.target.value)} />
+              <input style={styles.inputMoney} placeholder="월상환액" type="number" value={d.monthly} onChange={(e) => editRow("debts", d.id, "monthly", e.target.value)} />
+              <IconRemoveButton onClick={() => removeRow("debts", d.id)} />
+            </div>
+            <div className="row-edit-wide" style={styles.rowEditWide}>
+              <input style={styles.inputDay} placeholder="이자율(%)" value={d.rate} onChange={(e) => editRow("debts", d.id, "rate", e.target.value)} />
+              <input style={styles.inputDay} placeholder="만기일" value={d.due} onChange={(e) => editRow("debts", d.id, "due", e.target.value)} />
+            </div>
+            <ProgressBar pct={pct} tone="ink" />
+            <div style={styles.subtle}>{pct}% 상환 · 잔액 {won(d.remaining)}원</div>
+          </div>
+        );
+      })}
+      <div style={{ marginTop: 8 }}><LedgerLine label="전체 대출 잔액" value={debtProgress.remaining} strong /></div>
+    </div>
+  );
+}
+
+function FieldMoney({ label, value, onChange }) {
+  return (<label className="field-money-full" style={styles.fieldLabel}>{label}<input style={styles.inputMoneyFull} type="number" value={value} onChange={(e) => onChange(e.target.value)} /></label>);
+}
+function PillButton({ children, onClick }) { return (<button style={styles.pillButton} onClick={onClick}>{children}</button>); }
+function IconRemoveButton({ onClick }) { return (<button className="icon-remove-btn field-remove" style={styles.iconRemove} onClick={onClick} aria-label="삭제">✕</button>); }
+
+const styles = {
+  root: { background: c.page, minHeight: "100vh", color: c.ink },
+  topnav: { background: c.canvas, borderBottom: `1px solid ${c.hairline}`, position: "sticky", top: 0, zIndex: 5 },
+  topnavInner: { maxWidth: 960, margin: "0 auto", padding: "20px 24px 0 24px", display: "flex", justifyContent: "space-between", alignItems: "center" },
+  wordmark: { fontSize: 20, fontWeight: 700, color: c.ink, display: "flex", alignItems: "center", gap: 6 },
+  wordmarkDot: { color: c.primary, fontSize: 10 },
+  saveIndicator: { display: "flex", alignItems: "center", gap: 6, fontSize: 12, transition: "color 0.3s ease" },
+  saveDot: { width: 6, height: 6, borderRadius: "50%", display: "inline-block" },
+  navRow: { maxWidth: 960, margin: "0 auto", display: "flex", gap: 8, padding: "14px 24px 16px 24px", overflowX: "auto" },
+  navPill: { flexShrink: 0, background: c.canvas, border: `1px solid ${c.hairline}`, borderRadius: 999, padding: "9px 18px", fontSize: 14, fontWeight: 600, color: c.body, cursor: "pointer", whiteSpace: "nowrap" },
+  navPillActive: { background: c.ink, borderColor: c.ink, color: c.onPrimary },
+  page: { maxWidth: 960, margin: "0 auto", padding: "24px 24px 48px 24px" },
+  eyebrowRow: { fontSize: 13, fontWeight: 600, color: c.muted, marginBottom: 16 },
+  monthNav: { display: "flex", alignItems: "center", justifyContent: "center", gap: 20, marginBottom: 20 },
+  monthArrow: { width: 36, height: 36, borderRadius: "50%", border: `1px solid ${c.hairline}`, background: c.canvas, fontSize: 18, color: c.ink, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" },
+  monthArrowDisabled: { color: c.mutedSoft, cursor: "not-allowed", background: c.surfaceSoft },
+  monthLabelWrap: { display: "flex", flexDirection: "column", alignItems: "center", minWidth: 140 },
+  monthLabel: { fontSize: 19, fontWeight: 700, color: c.ink },
+  monthStartTag: { marginTop: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.6, color: c.primary, background: c.primaryDisabled, padding: "2px 8px", borderRadius: 999 },
+  grid3: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 16 },
+  grid2: { display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 },
+  summaryCard: { background: c.canvas, border: `1px solid ${c.hairline}`, borderRadius: 14, padding: 24 },
+  summaryLabel: { fontSize: 13, color: c.muted, marginBottom: 10, fontWeight: 500 },
+  summaryValue: { fontSize: 24, fontWeight: 700, letterSpacing: -0.3 },
+  won: { fontSize: 14, marginLeft: 3, fontWeight: 400, color: c.muted },
+  card: { background: c.canvas, border: `1px solid ${c.hairline}`, borderRadius: 14, padding: 24, marginBottom: 16 },
+  cardTitle: { fontSize: 16, fontWeight: 600, marginBottom: 16, color: c.ink },
+  cardTitleRow: { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 },
+  ledgerLine: { display: "flex", justifyContent: "space-between", padding: "12px 0", borderBottom: `1px solid ${c.hairlineSoft}`, fontSize: 14, color: c.body },
+  ledgerLineStrong: { borderBottom: "none", borderTop: `1px solid ${c.ink}`, marginTop: 4, paddingTop: 14, fontWeight: 700, color: c.ink },
+  mono: { fontVariantNumeric: "tabular-nums", fontWeight: 500 },
+  ratingBlock: { textAlign: "center", padding: "8px 0 20px 0" },
+  ratingRow: { display: "flex", alignItems: "center", justifyContent: "center", gap: 14 },
+  ratingOrnament: { width: 28, height: 1, background: c.hairline },
+  ratingNumber: { fontSize: 48, fontWeight: 700, letterSpacing: -1, lineHeight: 1 },
+  ratingLabel: { fontSize: 11, fontWeight: 700, letterSpacing: 1.2, color: c.mutedSoft, marginTop: 10, textTransform: "uppercase" },
+  progressTrack: { background: c.surfaceStrong, borderRadius: 999, height: 8, overflow: "hidden", marginBottom: 8 },
+  progressFill: { height: "100%", borderRadius: 999, transition: "width 0.4s ease" },
+  subtle: { fontSize: 13, color: c.muted, textAlign: "center" },
+  emptyState: { fontSize: 13.5, color: c.mutedSoft, padding: "20px 0", textAlign: "center" },
+  barRow: { display: "flex", alignItems: "center", gap: 12, marginBottom: 12 },
+  barLabel: { width: 78, fontSize: 13.5, color: c.body, flexShrink: 0 },
+  barTrack: { flex: 1, background: c.surfaceStrong, height: 10, borderRadius: 999, overflow: "hidden" },
+  barFill: { height: "100%", background: c.ink, borderRadius: 999 },
+  barValue: { width: 92, textAlign: "right", fontSize: 13, color: c.body, flexShrink: 0, fontVariantNumeric: "tabular-nums" },
+  historyRow: { display: "grid", gridTemplateColumns: "90px 1fr 1fr 1fr", gap: 8, padding: "10px 0", borderBottom: `1px solid ${c.hairlineSoft}`, fontSize: 13, color: c.body, alignItems: "center" },
+  historyMonth: { fontWeight: 600, color: c.ink },
+  historyStat: { fontSize: 12.5, color: c.muted },
+  fieldLabel: { display: "flex", flexDirection: "column", gap: 8, fontSize: 13, color: c.muted, fontWeight: 500 },
+  inputMoneyFull: { fontSize: 16, padding: "16px 14px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, height: 56, boxSizing: "border-box", width: "100%" },
+  rowEdit: { display: "grid", gridTemplateColumns: "1fr 130px 90px 32px", gap: 8, marginBottom: 8, alignItems: "center" },
+  rowEditWide: { display: "grid", gridTemplateColumns: "1fr 1fr 130px 1fr 32px", gap: 8, marginBottom: 8, alignItems: "center" },
+  itemRow: { marginBottom: 20, paddingBottom: 18, borderBottom: `1px solid ${c.hairlineSoft}` },
+  inputText: { fontSize: 13.5, padding: "10px 12px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0 },
+  inputMoney: { fontSize: 13.5, padding: "10px 12px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0, fontVariantNumeric: "tabular-nums" },
+  inputDay: { fontSize: 13.5, padding: "10px 12px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0 },
+  inputDate: { fontSize: 13.5, padding: "10px 12px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0 },
+  inputSelect: { fontSize: 13.5, padding: "10px 8px", border: `1px solid ${c.hairline}`, borderRadius: 8, background: c.canvas, color: c.ink, minWidth: 0 },
+  pillButton: { background: c.primary, color: c.onPrimary, border: "none", borderRadius: 999, padding: "10px 18px", fontSize: 13.5, fontWeight: 600, cursor: "pointer" },
+  iconRemove: { width: 32, height: 32, borderRadius: "50%", background: c.surfaceStrong, border: "none", color: c.muted, cursor: "pointer", fontSize: 13, display: "flex", alignItems: "center", justifyContent: "center" },
+};
+
+function App() {
+  const [pin, setPin] = useState(null);
+  if (!pin) return <PinGate onUnlock={setPin} />;
+  return <HouseholdLedger pin={pin} />;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
